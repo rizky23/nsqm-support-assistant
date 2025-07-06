@@ -1,0 +1,68 @@
+services:
+ chromadb:
+   image: chromadb/chroma:latest
+   container_name: telkomsel-chromadb
+   environment:
+     - CHROMA_SERVER_HOST=0.0.0.0
+     - CHROMA_SERVER_HTTP_PORT=8000
+   volumes:
+     - chromadb_data:/chroma/data
+   ports:
+     - "8000:8000"
+   networks:
+     - telkomsel-net
+   restart: unless-stopped
+
+ api-service:
+   build: .
+   container_name: telkomsel-api
+   ports:
+     - "8002:8002"
+   environment:
+     - CLICKHOUSE_HOST=10.54.29.236
+     - CLICKHOUSE_PORT=9443
+     - CLICKHOUSE_DB=default
+     - CLICKHOUSE_USER=muhammadrik
+     - CLICKHOUSE_PASSWORD=Denpasar123#
+     - CLICKHOUSE_SECURE=true
+     - CLICKHOUSE_VERIFY=false
+     - CHROMADB_HOST=chromadb
+     - CHROMADB_PORT=8000
+     - FLASK_HOST=0.0.0.0
+     - FLASK_PORT=8002
+     - FLASK_DEBUG=false
+   volumes:
+     - ./:/app
+     - ./docs:/app/docs:ro
+     - ./logs:/app/logs
+   depends_on:
+     - chromadb
+   networks:
+     - telkomsel-net
+   restart: unless-stopped
+
+ webui:
+   image: python:3.11-slim
+   container_name: telkomsel-webui
+   ports:
+     - "8080:8080"
+   environment:
+     - OPENAI_API_BASE_URL=http://api-service:8002/v1
+     - OPENAI_API_KEY=dummy
+   command: >
+     sh -c "
+       pip install --no-cache-dir open-webui &&
+       open-webui serve --host 0.0.0.0 --port 8080
+     "
+   depends_on:
+     - api-service
+   networks:
+     - telkomsel-net
+   restart: unless-stopped
+
+volumes:
+ chromadb_data:
+
+networks:
+ telkomsel-net:
+   driver: bridge

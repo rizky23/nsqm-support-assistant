@@ -1,0 +1,55 @@
+# # requirements.txt
+# # Core Flask & Web
+# flask==3.1.1
+# flask-cors==6.0.1
+
+# # Database (macOS ARM64 compatible)
+# psycopg2-binary==2.9.9
+
+# # CrewAI & LLM
+# crewai==0.130.0
+# langchain==0.3.24
+# langchain-ollama==0.3.3
+
+# # RAG & Knowledge Base (compatible versions)
+# chromadb>=0.5.23
+# sentence-transformers>=2.3.0
+# huggingface-hub>=0.19.0
+# PyPDF2==3.0.1
+
+# # Utilities
+# python-dotenv==1.0.0
+# requests==2.31.0
+# pyyaml==6.0.1
+
+# # Let pip resolve compatible versions automatically
+# pydantic>=2.7.4
+# ollama
+
+
+# requirements.txt
+# Core Flask & Web
+flask==3.1.1
+flask-cors==6.0.1
+# Database (macOS ARM64 compatible)
+clickhouse-driver>=0.2.6
+# CrewAI & LLM
+crewai>=0.120.0,<0.130.0
+langchain==0.3.24
+langchain-ollama==0.3.3
+# RAG & Knowledge Base (compatible versions)
+chromadb>=0.5.23
+sentence-transformers>=2.3.0
+huggingface-hub>=0.19.0
+PyPDF2==3.0.1
+# Data Processing (for Excel)
+pandas>=2.1.0
+openpyxl>=3.1.5
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+pyyaml==6.0.1
+# Let pip resolve compatible versions automatically
+pydantic>=2.7.4
+ollama
+clickhouse-connect>=0.6.8

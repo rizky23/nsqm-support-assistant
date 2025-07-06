@@ -1,0 +1,27 @@
+
+# Parameter Teknis Telkomsel
+
+## 4G LTE Parameters:
+
+### RSRP (Reference Signal Received Power):
+- Excellent: > -80 dBm
+- Good: -80 to -90 dBm  
+- Fair: -90 to -100 dBm
+- Poor: < -100 dBm
+
+### SINR (Signal to Interference plus Noise Ratio):
+- Excellent: > 20 dB
+- Good: 13-20 dB
+- Fair: 0-13 dB
+- Poor: < 0 dB
+
+### Carrier Aggregation:
+- Primary Component Carrier (PCC): Band 3 (1800MHz)
+- Secondary Component Carrier (SCC): Band 40 (2300MHz)
+- Expected throughput improvement: 30-50%
+
+## Troubleshooting Actions:
+- RSRP < -100 dBm: Check antenna alignment
+- SINR < 0 dB: Identify interference source  
+- CA not working: Verify device capability
+            

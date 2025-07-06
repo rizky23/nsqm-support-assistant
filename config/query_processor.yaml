@@ -1,0 +1,9 @@
+# config/query_processor.yaml
+knowledge_base:
+  similarity_threshold: 0.7
+  collection_name: "telkomsel_docs"
+  top_k_results: 3
+
+database:
+  table_name: "inap_ticketing_customer_complain"
+  enable_fallback: true

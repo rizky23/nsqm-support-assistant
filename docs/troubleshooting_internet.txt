@@ -1,0 +1,25 @@
+
+# Troubleshooting Internet Telkomsel
+
+## Masalah Umum Internet Lambat
+
+### Langkah Troubleshooting:
+1. Cek signal strength - minimal 2 bar
+2. Restart handphone 
+3. Cek kuota data tersisa
+4. Ganti ke mode 4G jika di 3G
+5. Pindah lokasi jika indoor
+
+### Root Cause Analysis:
+- Coverage area lemah
+- Congestion network 
+- Device compatibility issue
+- Carrier aggregation not optimal
+
+### Eskalasi:
+Jika langkah diatas gagal, eskalasi ke Level 2 dengan informasi:
+- MSISDN customer
+- Lokasi detail dengan koordinat
+- Hasil speed test
+- Device type dan OS version
+            

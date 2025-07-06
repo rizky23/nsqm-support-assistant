@@ -1,0 +1,28 @@
+
+# SOP Penanganan Keluhan Pelanggan
+
+## Prioritas Keluhan
+
+### High Priority:
+- Total blackout (no signal)
+- Service affecting massive customers
+- VIP customer complaints
+- Durasi: Max 4 jam resolution
+
+### Medium Priority:  
+- Slow internet performance
+- Intermittent connection
+- Voice quality issues
+- Durasi: Max 24 jam resolution
+
+### Low Priority:
+- Minor service degradation
+- Feature request
+- General inquiry
+- Durasi: Max 72 jam resolution
+
+## Escalation Matrix:
+Level 1 → Level 2: Complex technical issues
+Level 2 → Level 3: Infrastructure problems  
+Level 3 → Management: Policy decisions
+            

@@ -1,0 +1,131 @@
+# Customer Complaint Handling Process - Reguler (Telkomsel)
+
+## 1. Overview
+Proses penanganan keluhan pelanggan Telkomsel terbagi menjadi tiga domain utama:
+- Customer Care Management
+- NSQM (Network Service Quality Management)
+- Regional
+
+### Alur Umum:
+1. Keluhan dari pelanggan diterima melalui Customer Touch Point (CTP).
+2. Informasi diteruskan ke Digital SmartCare (DSC), kemudian diproses oleh Customer Complaint Assistant (CCA).
+3. Jika butuh investigasi teknis, diteruskan ke Service Desk Management (SDM).
+4. Bila perlu, eskalasi lanjut ke Regional untuk penyelesaian keluhan pelanggan.
+
+---
+
+## 2. Customer Care Management
+
+### CTP (Customer Touch Point)
+Merupakan titik masuk utama keluhan pelanggan, termasuk:
+- ByU
+- B2B
+- Ecare
+- GraPARI
+- Call Center
+
+CTP menghasilkan data seperti:
+- Interaction ID (Itrx ID)
+- Average Handling Time (AHT)
+- First Call Resolution (FCR)
+
+### DSC (Digital SmartCare)
+DSC berperan sebagai sistem otomasi untuk meneruskan input keluhan dari CTP ke backend CRM (CRM BE) dan CCA (Customer Complaint Assistant). Terintegrasi dengan unit seperti:
+- CES/MEA (Customer Enterprise Support)
+- ByU
+- CRM BE
+
+### CCA (Customer Complaint Assistant)
+Menerima input dari DSC dan bertanggung jawab untuk memverifikasi serta membuat tiket komplain. CCA bisa mengeskalasi ke:
+- Twamp (Two-Way Active Measurement Protocol)
+- INAP FM (INAP Fault Management)
+- PM (Performance Management)
+
+---
+
+## 3. NSQM (Network Service Quality Management)
+
+### SDM (Service Desk Management)
+Unit yang bertugas menangani komplain teknis dan menjembatani antara CCA dan Regional jika diperlukan.
+
+### CCH (Customer Complaint Handling)
+Mengelola tiket dan proses investigasi lebih lanjut. Mengakses berbagai sistem monitoring, seperti:
+- RCI (Red Cell Index)
+- Covmo (Coverage Monitoring)
+- Twamp
+- INAP FM
+- PM
+
+### SLA Monitoring
+- MTTD: Mean Time to Demarcate
+- MTTR: Mean Time To Resolve
+
+---
+
+## 4. Regional
+
+### Regional Unit
+Bertanggung jawab atas penyelesaian akhir jika keluhan bersifat regional. Bekerja sama dengan tim SDM.
+
+### Sub-unit dan Perannya:
+- FTR (First Time Resolution)
+- MSD (Mobile Service Delivery)
+- SQA (Service Quality Assurance)
+- RTPE (Radio, Transport, Power Engineering)
+- NOP (Network Operation & Productivity)
+- NVE EH (VIP & Enterprise Handling)
+- IREG (International Roaming)
+- SAM (Special Area Management)
+
+---
+
+## 5. Peran Tambahan
+
+### Agent CTP:
+- Menginput Interaction ID
+- Melibatkan Call Center & Ecare (Bandung & Semarang)
+
+### CHO (Customer Handling Officer):
+- Membuat Case ID
+- Membuat tiket ke Network
+
+### Mobile Service Delivery:
+- Membuat tiket demarkasi ke Regional
+- Menganalisis RCA (Root Cause Analysis) keluhan pelanggan
+
+### Regional:
+- Bertanggung jawab atas penyelesaian keluhan pelanggan secara menyeluruh.
+
+---
+
+## 6. Daftar Akronim
+
+| Akronim | Arti |
+|--------|------|
+| CTP | Customer Touch Point |
+| FCR | First Call Resolution |
+| AHT | Average Handling Time |
+| MTTD | Mean Time to Demarcate |
+| MTTR | Mean Time To Resolve |
+| Itrx ID | Interaction ID |
+| CCA | Customer Complaint Assistant |
+| DSC | Digital SmartCare |
+| CRM BE | Customer Relation Management Backend |
+| CES | Customer Enterprise Support |
+| B2B | Business to Business |
+| ByU | Produk Telkomsel |
+| SDM | Service Desk Management |
+| CCH | Customer Complaint Handling |
+| Covmo | Coverage Monitoring |
+| Twamp | Two-Way Active Measurement Protocol |
+| INAP FM | INAP Fault Management |
+| PM | Performance Management |
+| RCI | Red Cell Index |
+| FTR | First Time Resolution |
+| MSD | Mobile Service Delivery |
+| SQA | Service Quality Assurance |
+| RTPE | Radio Transport & Power Engineering |
+| NOP | Network Operation & Productivity |
+| NVE EH | Network VIP, Event & Enterprise Handling |
+| IREG | International Roaming |
+| SAM | Special Area Management |

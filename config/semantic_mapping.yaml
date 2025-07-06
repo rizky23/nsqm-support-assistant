@@ -1,0 +1,156 @@
+#config/semantic_mapping.yaml
+{
+  "table_name": "inap_ticketing_customer_complain",
+  "semantic_categories": {
+    "identifiers": {
+      "description": "Unique identifiers and reference fields",
+      "fields": ["order_id", "ticket_id", "vendor_ticket_number"]
+    },
+    "temporal": {
+      "description": "Time-based fields for temporal queries",
+      "fields": ["create_time", "customer_interaction_date_create_ticket", "create_time_l1_assign", "submit_time_l1_assign", "last_update_time"]
+    },
+    "customer": {
+      "description": "Customer identification and segmentation",
+      "fields": ["customer_msisdn_create_ticket", "complainer_name_create_ticket", "customer_type_create_ticket", "customer_subtype_create_ticket", "subscription_brand_create_ticket"]
+    },
+    "geographic": {
+      "description": "Location-based information",
+      "fields": ["provinsi_create_ticket", "kabupaten_kota_create_ticket", "kecamatan_create_ticket", "desa_kelurahan_create_ticket", "customer_region_create_ticket"]
+    },
+    "technical": {
+      "description": "Technical and service information",
+      "fields": ["description", "type_handset", "type_jaringan", "fault_cell_or_site_l1_assign", "pengaduan_create_ticket"]
+    },
+    "workflow": {
+      "description": "Process and status information",
+      "fields": ["business_status", "current_phase_name", "priority_l2_assign", "assign_to"]
+    }
+  },
+  "field_mappings": {
+    "order_id": {
+      "semantic_name": "Ticket ID",
+      "data_type": "string",
+      "category": "identifiers",
+      "nlq_synonyms": ["ticket", "order", "id", "number", "tiket"],
+      "search_type": "exact_match"
+    },
+    "create_time": {
+      "semantic_name": "Creation Time",
+      "data_type": "timestamp",
+      "category": "temporal",
+      "nlq_synonyms": ["created", "dibuat", "waktu", "tanggal", "when"],
+      "search_type": "range",
+      "format": "YYYY-MM-DD HH:MM:SS"
+    },
+    "customer_type_create_ticket": {
+      "semantic_name": "Customer Type",
+      "data_type": "enum",
+      "category": "customer",
+      "nlq_synonyms": ["tipe", "jenis", "segmen", "consumer", "corporate"],
+      "search_type": "categorical",
+      "values": ["Consumer", "Corporate"]
+    },
+    "kabupaten_kota_create_ticket": {
+      "semantic_name": "City/District",
+      "data_type": "string",
+      "category": "geographic",
+      "nlq_synonyms": ["kota", "kabupaten", "city", "district"],
+      "search_type": "categorical"
+    },
+    "kecamatan_create_ticket": {
+      "semantic_name": "Subdistrict",
+      "data_type": "string",
+      "category": "geographic",
+      "nlq_synonyms": ["kecamatan", "subdistrict", "kec"],
+      "search_type": "categorical"
+    },
+    "desa_kelurahan_create_ticket": {
+      "semantic_name": "Kelurahan",
+      "data_type": "string",
+      "category": "geographic",
+      "nlq_synonyms": ["kelurahan", "desa", "village"],
+      "search_type": "categorical"
+    },
+    "provinsi_create_ticket": {
+      "semantic_name": "Province",
+      "data_type": "string",
+      "category": "geographic",
+      "nlq_synonyms": ["provinsi", "province", "wilayah", "daerah"],
+      "search_type": "categorical"
+    },
+    "business_status": {
+      "semantic_name": "Ticket Status",
+      "data_type": "string",
+      "category": "workflow",
+      "nlq_synonyms": ["status", "keadaan", "kondisi", "selesai", "progress"],
+      "search_type": "categorical",
+      "values": ["BusinessStatusResovled", "Open", "Assigned", "Closed"]
+    },
+    "description": {
+      "semantic_name": "Issue Description",
+      "data_type": "text",
+      "category": "technical",
+      "nlq_synonyms": ["issue", "masalah", "keluhan", "problem", "deskripsi"],
+      "search_type": "fulltext",
+      "searchable": true
+    }
+  },
+  "intent_patterns": {
+    "summary": {
+      "keywords": ["summary", "ringkasan", "laporan", "rekap", "overview"],
+      "sql_template": "SELECT {geo_field}, COUNT(*) AS total_keluhan, business_status, customer_type_create_ticket, DATE_TRUNC('week', create_time) AS minggu FROM {table} WHERE {conditions} GROUP BY {geo_field}, business_status, customer_type_create_ticket, minggu ORDER BY minggu DESC",
+      "examples": [
+        "Berikan ringkasan komplen untuk Jakarta Timur selama 1 bulan terakhir",
+        "Laporan summary keluhan di kecamatan Tebet minggu ini",
+        "Rekap keluhan wilayah provinsi Jawa Barat bulan ini",
+        "Ringkasan kelurahan Cempaka Putih dalam 1 minggu terakhir"
+      ]
+    },
+    "detail": {
+      "keywords": ["detail", "info", "informasi", "rinci", "CC-", "628", "082"],
+      "sql_template": "SELECT * FROM {table} WHERE order_id = '{ticket_id}' OR customer_msisdn_create_ticket = '{msisdn}' LIMIT 1",
+      "examples": [
+        "CC-20250603-00000475",
+        "6282293110414", 
+        "detail tiket CC-20250603-00000475",
+        "info keluhan 6282293110414",
+        "rincian CC-20250603-00000475"
+      ]
+    }
+  },
+  "time_expressions": {
+    "hari ini": {
+      "condition": "DATE(create_time) = CURRENT_DATE",
+      "group_by": "hour"
+    },
+    "kemarin": {
+      "condition": "DATE(create_time) = CURRENT_DATE - INTERVAL '1 day'",
+      "group_by": "hour"
+    },
+    "minggu ini": {
+      "condition": "create_time >= DATE_TRUNC('week', CURRENT_DATE)",
+      "group_by": "day"
+    },
+    "minggu lalu": {
+      "condition": "create_time >= DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week' AND create_time < DATE_TRUNC('week', CURRENT_DATE)",
+      "group_by": "day"
+    },
+    "bulan ini": {
+      "condition": "create_time >= DATE_TRUNC('month', CURRENT_DATE)",
+      "group_by": "week"
+    },
+    "bulan lalu": {
+      "condition": "create_time >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month' AND create_time < DATE_TRUNC('month', CURRENT_DATE)",
+      "group_by": "week"
+    }
+  },
+  "business_rules": {
+    "geographic_hierarchy": [
+      "provinsi_create_ticket",
+      "kabupaten_kota_create_ticket",
+      "kecamatan_create_ticket",
+      "desa_kelurahan_create_ticket"
+    ]
+  }
+}

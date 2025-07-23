@@ -1,0 +1,1544 @@
+# import sys
+# import os
+
+# # Add app directory to Python path
+# sys.path.append('/app')
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# from fastapi import FastAPI, HTTPException
+# from typing import Dict, Any, Optional, List
+# import httpx
+# from pydantic import BaseModel
+# import re
+# import json
+# from datetime import datetime, timedelta
+# import google.generativeai as genai
+# import uuid
+# import time
+# from datetime import datetime, timedelta
+
+
+
+
+# # Import new conversation components
+# try:
+#     from shared.storage.conversation_store import ConversationStore
+#     from shared.utils.context_manager import OllamaContextManager, ConversationAnalyzer
+#     from shared.models.conversation_models import (
+#         ChatRequest, ChatResponse, ConversationSummary, 
+#         OpenAIChatRequest, OpenAIChatMessage, MessageRole
+#     )
+# except ImportError as e:
+#     print(f"Import error: {e}")
+#     # Fallback imports
+#     from pydantic import BaseModel
+#     class ChatRequest(BaseModel):
+#         query: str
+
+# # Try import shared modules, fallback if not available  <- KEEP THIS
+# try:
+#     from shared.utils.logger import log
+# except ImportError:
+#     import logging
+#     logging.basicConfig(level=logging.INFO)
+#     log = logging.getLogger(__name__)
+
+# app = FastAPI(title="MCP Orchestrator - Conversation Mode")  <- UPDATE TITLE
+
+# # MCP Server endpoints
+# MCP_SERVERS = {
+#     "telco": "http://telecom-mcp-ecosystem-telco-mcp-1:8001",
+#     "vector_db": "http://telecom-mcp-ecosystem-vector-mcp-1:8002",
+#     "mbb": "http://telecom-mcp-ecosystem-mbb-mcp-1:8003"
+# }
+
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-fallback-key")
+# GEMINI_MODEL = "gemini-1.5-flash"
+
+# # Session Management Classes
+# class ChatSession:
+#     """Session management for conversation context"""
+    
+#     def __init__(self, session_id: str):
+#         self.session_id = session_id
+#         self.created_at = datetime.now()
+#         self.last_activity = datetime.now()
+#         self.conversation_history: List[Dict[str, Any]] = []
+#         self.context: Dict[str, Any] = {}
+    
+#     def add_exchange(self, query: str, response: str, tools_used: List[str] = None):
+#         """Add a query-response exchange to history"""
+#         exchange = {
+#             "timestamp": datetime.now(),
+#             "query": query,
+#             "response": response,
+#             "tools_used": tools_used or []
+#         }
+#         self.conversation_history.append(exchange)
+#         self.last_activity = datetime.now()
+        
+#         # Extract and store entities for context
+#         self._extract_entities(query, response)
+    
+#     def _extract_entities(self, query: str, response: str):
+#         """Extract important entities from conversation for context"""
+#         # Extract MSISDN
+#         msisdn_patterns = [
+#             r'\b(08\d{8,11})\b',     # Indonesian format
+#             r'\b(82\d{9,12})\b',     # Demo format  
+#             r'\b(81\d{8,11})\b',     # Your format
+#             r'\b(\d{10,13})\b'       # General mobile format
+#         ]
+        
+#         for pattern in msisdn_patterns:
+#             match = re.search(pattern, query + " " + response)
+#             if match:
+#                 self.context["last_msisdn"] = match.group(1)
+#                 break
+        
+#         # Extract device names
+#         device_pattern = r'\b(?:REALME|SAMSUNG|XIAOMI|OPPO|VIVO|IPHONE|HUAWEI)\s+[A-Z0-9\s]+(?:PLUS|PRO|LITE|MAX)?\b'
+#         device_matches = re.findall(device_pattern, response, re.IGNORECASE)
+#         if device_matches:
+#             self.context["last_device"] = device_matches[0].strip()
+        
+#         # Extract 4G parameters
+#         param_pattern = r'\b[A-Z][a-zA-Z0-9]*(?:Rsrp|Rsrq|Sinr|Thld|B1|B2)\b'
+#         param_matches = re.findall(param_pattern, query + " " + response)
+#         if param_matches:
+#             self.context["last_parameters"] = list(set(param_matches))
+    
+#     def get_context(self) -> Dict[str, Any]:
+#         """Get current conversation context"""
+#         # Get last 3 exchanges for context
+#         recent_exchanges = self.conversation_history[-3:] if len(self.conversation_history) > 0 else []
+        
+#         return {
+#             "session_id": self.session_id,
+#             "recent_history": recent_exchanges,
+#             "context": self.context,
+#             "conversation_length": len(self.conversation_history)
+#         }
+
+# # Request/Response Models
+# class ChatRequest(BaseModel):
+#     query: str
+#     session_id: str = "default"
+
+# class ChatResponse(BaseModel):
+#     success: bool
+#     response: str
+#     query: str
+#     tools_used: list = []
+#     session_id: Optional[str] = None
+#     timestamp: Optional[datetime] = None
+#     raw_data: Optional[Dict[str, Any]] = None
+
+# class ChatMessage(BaseModel):
+#     role: str  # "user", "assistant", "system"
+#     content: str
+
+# class ChatCompletionRequest(BaseModel):
+#     model: str
+#     messages: List[ChatMessage]
+#     temperature: Optional[float] = 0.7
+#     max_tokens: Optional[int] = None
+#     stream: Optional[bool] = False
+
+# # Session storage - In production, use Redis
+# sessions: Dict[str, ChatSession] = {}
+# SESSION_TIMEOUT = timedelta(hours=1)
+
+# def cleanup_old_sessions():
+#     """Remove sessions that haven't been active for SESSION_TIMEOUT"""
+#     current_time = datetime.now()
+#     expired_sessions = [
+#         session_id for session_id, session in sessions.items()
+#         if current_time - session.last_activity > SESSION_TIMEOUT
+#     ]
+#     for session_id in expired_sessions:
+#         del sessions[session_id]
+#         log.info(f"Cleaned up expired session: {session_id}")
+
+# def get_or_create_session(session_id: str) -> ChatSession:
+#     """Get existing session or create new one"""
+#     cleanup_old_sessions()  # Clean up old sessions
+    
+#     if session_id not in sessions:
+#         sessions[session_id] = ChatSession(session_id)
+#         log.info(f"Created new session: {session_id}")
+#     else:
+#         # Update last activity
+#         sessions[session_id].last_activity = datetime.now()
+#         log.info(f"Retrieved existing session: {session_id}")
+    
+#     return sessions[session_id]
+
+# async def call_ollama(prompt: str, context: Dict[str, Any] = None) -> str:
+#     """Call Ollama instead of Gemini"""
+#     try:
+#         # Build context-aware prompt (same logic as Gemini)
+#         full_prompt = prompt
+#         if context and context.get("recent_history"):
+#             history_text = "\n".join([
+#                 f"Previous Q: {exchange['query']}\nPrevious A: {exchange['response'][:200]}..."
+#                 for exchange in context["recent_history"][-2:]  # Last 2 exchanges
+#             ])
+#             full_prompt = f"Context from recent conversation:\n{history_text}\n\nCurrent question: {prompt}"
+        
+#         async with httpx.AsyncClient(timeout=30.0) as client:
+#             response = await client.post(
+#                 "http://host.docker.internal:11434/api/generate",
+#                 json={
+#                     "model": "llama3:latest",
+#                     "prompt": full_prompt,
+#                     "stream": False
+#                 }
+#             )
+            
+#             if response.status_code == 200:
+#                 result = response.json()
+#                 return result["response"].strip()
+#             else:
+#                 log.error(f"Ollama API error: {response.status_code}")
+#                 return "Maaf, terjadi kesalahan saat memproses respons."
+                
+#     except Exception as e:
+#         log.error(f"Ollama call failed: {e}")
+#         return "Maaf, layanan AI sedang tidak tersedia."
+
+# def should_use_historical_analysis(query: str) -> bool:
+#     """Determine if query needs historical analysis (7 days)"""
+#     historical_keywords = [
+#         'history', 'historical', 'trend', 'compare', 'comparison', 'minggu', 'week', 
+#         'hari ini vs', 'bandingkan', '7 hari', 'seminggu', 'kemarin vs', 'summary',
+#         'perkembangan', 'grafik', 'chart'
+#     ]
+#     return any(keyword in query.lower() for keyword in historical_keywords)
+
+# async def parse_user_query(query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+#     """Parse user query using LLM for intent detection with context awareness"""
+#     parsed = {
+#         "msisdn": None,
+#         "intent": "general",
+#         "keywords": [],
+#         "needs_history": False
+#     }
+    
+#     # Extract MSISDN from query first
+#     msisdn_patterns = [
+#         r'\b(08\d{8,11})\b',     # Indonesian format
+#         r'\b(82\d{9,12})\b',     # Demo format  
+#         r'\b(81\d{8,11})\b',     # Your format
+#         r'\b(\d{10,13})\b'       # General mobile format
+#     ]
+    
+#     for pattern in msisdn_patterns:
+#         match = re.search(pattern, query)
+#         if match:
+#             parsed["msisdn"] = match.group(1)
+#             break
+    
+#     # If no MSISDN in query, check context
+#     if not parsed["msisdn"] and context and context.get("context", {}).get("last_msisdn"):
+#         parsed["msisdn"] = context["context"]["last_msisdn"]
+#         log.info(f"Using MSISDN from context: {parsed['msisdn']}")
+    
+#     # Check if historical analysis needed
+#     parsed["needs_history"] = should_use_historical_analysis(query)
+    
+#     # Use LLM for intent detection with context
+#     intent_prompt = f"""
+# Analisis query pengguna berikut dan tentukan intent/tujuan:
+
+# Query: "{query}"
+
+# Tentukan intent dari pilihan berikut:
+# - "analysis": Untuk analisis data, cek traffic, lihat performa, monitoring
+# - "troubleshoot": Untuk masalah jaringan, lambat, error, tidak bisa akses
+# - "comparison": Untuk membandingkan data, performa, trend
+# - "general": Untuk pertanyaan umum atau sapaan
+
+# Jawab hanya dengan satu kata intent saja:"""
+    
+#     try:
+#         intent_result = await call_ollama(intent_prompt, context)
+#         detected_intent = intent_result.strip().lower()
+        
+#         if detected_intent in ["analysis", "troubleshoot", "comparison"]:
+#             parsed["intent"] = detected_intent
+#         else:
+#             parsed["intent"] = "general"
+            
+#     except Exception as e:
+#         log.error(f"Intent detection failed: {e}")
+#         parsed["intent"] = "general"
+    
+#     return parsed
+
+# async def execute_telco_tool(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+#     """Execute telco MCP tool"""
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             response = await client.post(
+#                 f"{MCP_SERVERS['telco']}/call",
+#                 json={"tool": tool_name, "params": params},
+#                 timeout=60.0
+#             )
+            
+#             if response.status_code == 200:
+#                 return response.json()
+#             else:
+#                 return {"success": False, "error": f"HTTP {response.status_code}"}
+#     except Exception as e:
+#         log.error(f"Telco tool call failed: {e}")
+#         return {"success": False, "error": str(e)}
+
+# async def execute_historical_analysis(msisdn: str, days: int = 7) -> Dict[str, Any]:
+#     """Execute historical analysis for multiple days"""
+#     historical_data = []
+#     current_date = datetime.now()
+    
+#     log.info(f"Starting historical analysis for {msisdn} - {days} days")
+    
+#     for i in range(days):
+#         # Calculate date (going backwards)
+#         target_date = current_date - timedelta(days=i+1)
+#         start_time = target_date.strftime("%Y-%m-%d 00:00")
+#         end_time = target_date.strftime("%Y-%m-%d 23:55")
+        
+#         params = {
+#             "msisdn": msisdn,
+#             "start_time": start_time,
+#             "end_time": end_time
+#         }
+        
+#         log.info(f"Fetching data for {target_date.strftime('%Y-%m-%d')}")
+        
+#         # Call telco API for this date
+#         day_result = await execute_telco_tool("get_comprehensive_analysis", params)
+        
+#         if day_result.get("success"):
+#             day_data = {
+#                 "date": target_date.strftime("%Y-%m-%d"),
+#                 "data": day_result,
+#                 "has_data": True
+#             }
+#         else:
+#             day_data = {
+#                 "date": target_date.strftime("%Y-%m-%d"),
+#                 "error": day_result.get("error", "No data available"),
+#                 "has_data": False
+#             }
+        
+#         historical_data.append(day_data)
+    
+#     return {
+#         "success": True,
+#         "msisdn": msisdn,
+#         "period": f"Last {days} days",
+#         "data": historical_data,
+#         "total_days": len(historical_data),
+#         "days_with_data": len([d for d in historical_data if d["has_data"]])
+#     }
+
+# async def call_mbb_tool(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+#     """Execute MBB MCP tool"""
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             response = await client.post(
+#                 f"{MCP_SERVERS['mbb']}/call",
+#                 json={"tool": tool_name, "params": params},
+#                 timeout=60.0
+#             )
+            
+#             if response.status_code == 200:
+#                 return response.json()
+#             else:
+#                 return {"success": False, "error": f"HTTP {response.status_code}"}
+#     except Exception as e:
+#         log.error(f"MBB tool call failed: {e}")
+#         return {"success": False, "error": str(e)}
+
+# def should_use_mbb_knowledge(query: str) -> bool:
+#     """Determine if query needs MBB knowledge base"""
+#     mbb_keywords = ['4g', 'lte', 'parameter', 'optimize', 'b1', 'accessibility', 'mobility', 'anchoring', 'rsrp', 'rsrq', 'sinr']
+#     return any(keyword in query.lower() for keyword in mbb_keywords)
+
+# async def create_llm_response(query: str, tool_results: Dict[str, Any], context: Dict[str, Any] = None) -> str:
+#     """Create natural language response using LLM with context"""
+    
+#     # Enhanced context prompt
+#     conversation_history = ""
+#     if context and context.get("recent_history"):
+#         conversation_history = "\n".join([
+#             f"User: {exchange['query']}\nAssistant: {exchange['response'][:150]}..."
+#             for exchange in context["recent_history"][-2:]
+#         ])
+    
+#     context_prompt = f"""
+# Anda adalah asisten telekomunikasi. Analisis percakapan sebelumnya untuk memahami konteks.
+
+# Percakapan sebelumnya:
+# {conversation_history}
+
+# Data hasil analisis:
+# {json.dumps(tool_results, indent=2)}
+
+# Pertanyaan sekarang: "{query}"
+
+# Jika pertanyaan sekarang merujuk pada topik sebelumnya (seperti "caranya", "bagaimana", "gimana"), 
+# berikan jawaban yang relevan dengan topik terakhir yang dibahas.
+
+# Tugas: Buatlah response dalam bahasa Indonesia yang natural dan mudah dipahami.
+# Response:"""
+    
+#     return await call_ollama(context_prompt, context)
+
+# # Add before existing @app.post("/chat") endpoint (around line 450)
+
+# # OpenAI Compatible Endpoints
+# @app.get("/v1/models")
+# async def list_models():
+#     """OpenAI compatible models endpoint"""
+#     return {
+#         "object": "list",
+#         "data": [
+#             {
+#                 "id": "nsqm-support-assistant",
+#                 "object": "model",
+#                 "created": int(time.time()),
+#                 "owned_by": "nsqm",
+#                 "permission": [],
+#                 "root": "nsqm-support-assistant",
+#                 "parent": None,
+#                 "description": "NSQM Telco Network Analysis Assistant"
+#             }
+#         ]
+#     }
+
+# @app.post("/v1/chat/completions")
+# async def chat_completions(request: ChatCompletionRequest):
+#     """OpenAI compatible chat completions endpoint"""
+    
+#     # Extract user message
+#     user_message = ""
+#     for message in request.messages:
+#         if message.role == "user":
+#             user_message = message.content
+#             break
+    
+#     if not user_message:
+#         user_message = "Hello"
+    
+#     # Create session ID for tracking
+#     session_id = f"openwebui_{int(time.time())}"
+    
+#     try:
+#         # Use existing chat_endpoint function
+#         chat_request = ChatRequest(query=user_message, session_id=session_id)
+#         result = await chat_endpoint(chat_request)
+        
+#         response_content = result.response if result.success else "Sorry, I couldn't process your request."
+#         tools_used = result.tools_used if hasattr(result, 'tools_used') else []
+        
+#         # Add context about tools used if any
+#         if tools_used:
+#             response_content += f"\n\n*Analysis performed using: {', '.join(tools_used)}*"
+        
+#         # Format as OpenAI compatible response
+#         return {
+#             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+#             "object": "chat.completion",
+#             "created": int(time.time()),
+#             "model": request.model,
+#             "choices": [
+#                 {
+#                     "index": 0,
+#                     "message": {
+#                         "role": "assistant",
+#                         "content": response_content
+#                     },
+#                     "finish_reason": "stop"
+#                 }
+#             ],
+#             "usage": {
+#                 "prompt_tokens": len(user_message.split()),
+#                 "completion_tokens": len(response_content.split()),
+#                 "total_tokens": len(user_message.split()) + len(response_content.split())
+#             }
+#         }
+        
+#     except Exception as e:
+#         log.error(f"Chat completion error: {str(e)}")
+#         error_content = f"An error occurred while processing your request: {str(e)}"
+        
+#         return {
+#             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+#             "object": "chat.completion",
+#             "created": int(time.time()),
+#             "model": request.model,
+#             "choices": [
+#                 {
+#                     "index": 0,
+#                     "message": {
+#                         "role": "assistant",
+#                         "content": error_content
+#                     },
+#                     "finish_reason": "stop"
+#                 }
+#             ],
+#             "usage": {
+#                 "prompt_tokens": len(user_message.split()),
+#                 "completion_tokens": len(error_content.split()),
+#                 "total_tokens": len(user_message.split()) + len(error_content.split())
+#             }
+#         }
+
+
+
+# @app.post("/chat")
+# async def chat_endpoint(request: ChatRequest):
+#     """Natural language chat endpoint with session management"""
+    
+#     # Get or create session
+#     session = get_or_create_session(request.session_id)
+    
+#     # Get conversation context
+#     context = session.get_context()
+    
+#     # Parse user query with context
+#     parsed_query = await parse_user_query(request.query, context) 
+#     msisdn = parsed_query.get("msisdn")
+#     intent = parsed_query.get("intent")
+#     needs_history = parsed_query.get("needs_history", False)
+    
+#     tools_used = []
+    
+#     # Check if MBB knowledge needed
+#     if should_use_mbb_knowledge(request.query):
+#         log.info("Using MBB knowledge base")
+        
+#         # Extract parameter name if mentioned
+#         param_match = re.search(r'\b[A-Z][a-zA-Z0-9]+(?:Rsrp|Rsrq|Sinr|Thld|B1|B2)\b', request.query)
+#         if param_match:
+#             tool_result = await call_mbb_tool("search_4g_parameters", {
+#                 "parameter_name": param_match.group()
+#             })
+#             tools_used.append("search_4g_parameters")
+#         else:
+#             tool_result = await call_mbb_tool("search_mbb_knowledge", {
+#                 "query": request.query
+#             })
+#             tools_used.append("search_mbb_knowledge")
+        
+#         if tool_result.get("success"):
+#             response_text = await call_ollama(
+#                 f"Based on this 4G/LTE knowledge, respond in Indonesian: {json.dumps(tool_result, indent=2)}\n\nUser query: {request.query}",
+#                 context
+#             )
+            
+#             # Add exchange to session history
+#             session.add_exchange(request.query, response_text, tools_used)
+            
+#             return ChatResponse(
+#                 success=True,
+#                 response=response_text,
+#                 query=request.query,
+#                 tools_used=tools_used,
+#                 session_id=request.session_id,
+#                 timestamp=datetime.now(),
+#                 raw_data=tool_result
+#             )
+#         else:
+#             response_text = f"Error accessing MBB knowledge: {tool_result.get('error')}"
+    
+#     elif msisdn:
+
+#         # Telco API analysis
+#         if needs_history:
+#             # Historical analysis (7 days)
+#             log.info(f"Executing historical analysis for MSISDN: {msisdn}")
+#             tool_result = await execute_historical_analysis(msisdn, days=7)
+#             tools_used.append("historical_analysis")
+
+#         # Telco API analysis
+#         def detect_date_from_query(query: str) -> datetime:
+#             """Smart date detection - agile parsing for various formats"""
+#             import re
+#             from datetime import datetime, timedelta
+            
+#             current_year = datetime.now().year
+#             current_month = datetime.now().month
+            
+#             # Month mapping for Indonesian
+#             month_map = {
+#                 'jan': 1, 'januari': 1,
+#                 'feb': 2, 'februari': 2,
+#                 'mar': 3, 'maret': 3,
+#                 'apr': 4, 'april': 4,
+#                 'mei': 5, 'may': 5,
+#                 'jun': 6, 'juni': 6,
+#                 'jul': 7, 'juli': 7,
+#                 'aug': 8, 'agustus': 8,
+#                 'sep': 9, 'september': 9,
+#                 'oct': 10, 'oktober': 10,
+#                 'nov': 11, 'november': 11,
+#                 'dec': 12, 'desember': 12
+#             }
+            
+#             # Pattern 1: "tanggal 16" or "16" -> current month/year
+#             pattern1 = re.search(r'\b(?:tanggal\s+)?(\d{1,2})\b(?!\s*(?:jul|juli|jan|feb))', query.lower())
+#             if pattern1:
+#                 day = int(pattern1.group(1))
+#                 try:
+#                     return datetime(current_year, current_month, day)
+#                 except ValueError:
+#                     pass
+            
+#             # Pattern 2: "16 jul" or "16 juli" -> current year
+#             pattern2 = re.search(r'\b(\d{1,2})\s+(jan|feb|mar|apr|mei|jun|jul|aug|sep|oct|nov|dec|januari|februari|maret|april|juni|juli|agustus|september|oktober|november|desember)\b', query.lower())
+#             if pattern2:
+#                 day = int(pattern2.group(1))
+#                 month_str = pattern2.group(2)
+#                 month = month_map.get(month_str, current_month)
+#                 try:
+#                     return datetime(current_year, month, day)
+#                 except ValueError:
+#                     pass
+            
+#             # Pattern 3: "tanggal 14 jul 2025" -> full date
+#             pattern3 = re.search(r'\b(?:tanggal\s+)?(\d{1,2})\s+(jan|feb|mar|apr|mei|jun|jul|aug|sep|oct|nov|dec|januari|februari|maret|april|juni|juli|agustus|september|oktober|november|desember)\s+(\d{4})\b', query.lower())
+#             if pattern3:
+#                 day = int(pattern3.group(1))
+#                 month_str = pattern3.group(2)
+#                 year = int(pattern3.group(3))
+#                 month = month_map.get(month_str, current_month)
+#                 try:
+#                     return datetime(year, month, day)
+#                 except ValueError:
+#                     pass
+            
+#             # Pattern 4: "2025-07-14" or "14-07-2025"
+#             pattern4 = re.search(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b', query)
+#             if pattern4:
+#                 year, month, day = int(pattern4.group(1)), int(pattern4.group(2)), int(pattern4.group(3))
+#                 try:
+#                     return datetime(year, month, day)
+#                 except ValueError:
+#                     pass
+            
+#             pattern5 = re.search(r'\b(\d{1,2})-(\d{1,2})-(\d{4})\b', query)
+#             if pattern5:
+#                 day, month, year = int(pattern5.group(1)), int(pattern5.group(2)), int(pattern5.group(3))
+#                 try:
+#                     return datetime(year, month, day)
+#                 except ValueError:
+#                     pass
+            
+#             # Relative dates
+#             today_keywords = ['hari ini', 'today', 'sekarang', 'saat ini']
+#             yesterday_keywords = ['kemarin', 'yesterday']
+            
+#             if any(keyword in query.lower() for keyword in today_keywords):
+#                 return datetime.now()
+#             elif any(keyword in query.lower() for keyword in yesterday_keywords):
+#                 return datetime.now() - timedelta(days=1)
+#             else:
+#                 # Default to today
+#                 return datetime.now()
+        
+#         target_date = detect_date_from_query(request.query)
+#         specific_date_detected = target_date.date() != (datetime.now() - timedelta(days=1)).date()
+#         params = {
+#             "msisdn": msisdn,
+#             "start_time": target_date.strftime("%Y-%m-%d 00:00"),
+#             "end_time": target_date.strftime("%Y-%m-%d 23:55")
+#         }
+        
+#         # Select appropriate tool based on intent
+
+#         if specific_date_detected:
+#             tool_name = "get_comprehensive_analysis"  # Always use comprehensive for specific dates
+#         elif intent == "troubleshoot":
+#             tool_name = "analyze_network_issues"
+#         elif intent == "analysis":
+#             tool_name = "get_comprehensive_analysis"
+#         else:
+#             tool_name = "get_comprehensive_analysis"  # Default to comprehensive analysis
+
+#         tools_used.append(tool_name)
+        
+#         # Execute telco tool
+#         log.info(f"Executing {tool_name} for MSISDN: {msisdn} on {target_date.strftime('%Y-%m-%d')}")
+#         tool_result = await execute_telco_tool(tool_name, params)
+        
+#         if tool_result.get("success"):
+#             # Generate natural language response using LLM with context
+#             response_text = await create_llm_response(request.query, tool_result, context)
+            
+#             # Add exchange to session history
+#             session.add_exchange(request.query, response_text, tools_used)
+            
+#             return ChatResponse(
+#                 success=True,
+#                 response=response_text,
+#                 query=request.query,
+#                 tools_used=tools_used,
+#                 session_id=request.session_id,
+#                 timestamp=datetime.now(),
+#                 raw_data=tool_result
+#             )
+#         else:
+#             error_response = f"Gagal menganalisis data untuk {msisdn}: {tool_result.get('error', 'Unknown error')}"
+#             session.add_exchange(request.query, error_response, tools_used)
+            
+#             return ChatResponse(
+#                 success=False,
+#                 response=error_response,
+#                 query=request.query,
+#                 tools_used=tools_used,
+#                 session_id=request.session_id,
+#                 timestamp=datetime.now()
+#             )
+    
+#     # For non-MSISDN queries, use LLM for general response with context
+#     general_prompt = f"""
+# Pertanyaan pengguna: "{request.query}"
+
+# Konteks: Anda adalah asisten analisis telekomunikasi yang membantu menganalisis data jaringan.
+
+# Jika pertanyaan tidak berkaitan dengan telco/jaringan, jelaskan bahwa Anda khusus untuk analisis telekomunikasi.
+# Jika berkaitan dengan telco tapi tidak ada MSISDN, berikan panduan cara menggunakan sistem.
+
+# Response dalam bahasa Indonesia:"""
+    
+#     response_text = await call_ollama(general_prompt, context)
+    
+#     # Add exchange to session history
+#     session.add_exchange(request.query, response_text, [])
+    
+#     return ChatResponse(
+#         success=True,
+#         response=response_text,
+#         query=request.query,
+#         tools_used=[],
+#         session_id=request.session_id,
+#         timestamp=datetime.now()
+#     )
+
+# # Update health check
+# @app.get("/health")
+# async def health_check():
+#     health_status = {
+#         "orchestrator": "healthy", 
+#         "chat_endpoint": "available",
+#         "llm_service": False,  # Test Gemini connectivity
+#         "servers": {},
+#         "active_sessions": len(sessions)
+#     }
+    
+#     # Check Gemini
+#     try:
+#         test_response = await call_ollama("Test connection")
+#         health_status["llm_service"] = len(test_response) > 0
+#     except:
+#         health_status["llm_service"] = False
+    
+#     # Check MCP servers
+#     for server_name, server_url in MCP_SERVERS.items():
+#         try:
+#             async with httpx.AsyncClient() as client:
+#                 response = await client.get(f"{server_url}/health", timeout=5.0)
+#                 if response.status_code == 200:
+#                     health_status["servers"][server_name] = "healthy"
+#                 else:
+#                     health_status["servers"][server_name] = "unhealthy"
+#         except:
+#             health_status["servers"][server_name] = "unreachable"
+    
+#     return health_status
+
+# @app.get("/sessions")
+# async def get_sessions():
+#     """Get active sessions info (for debugging)"""
+#     return {
+#         "active_sessions": len(sessions),
+#         "sessions": {
+#             session_id: {
+#                 "created_at": session.created_at.isoformat(),
+#                 "last_activity": session.last_activity.isoformat(),
+#                 "conversation_length": len(session.conversation_history),
+#                 "context_keys": list(session.context.keys())
+#             }
+#             for session_id, session in sessions.items()
+#         }
+#     }
+
+# @app.delete("/sessions/{session_id}")
+# async def delete_session(session_id: str):
+#     """Delete specific session"""
+#     if session_id in sessions:
+#         del sessions[session_id]
+#         return {"message": f"Session {session_id} deleted"}
+#     else:
+#         raise HTTPException(status_code=404, detail="Session not found")
+
+# @app.get("/")
+# async def root():
+#     return {"message": "MCP Orchestrator with LLM Chat Interface is running"}
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     print("Starting MCP Orchestrator with LLM on port 8000...")
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# orchestrator/main.py - Updated for Claude-style conversations
+import sys
+import os
+
+# Add app directory to Python path
+sys.path.append('/app')
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fastapi import FastAPI, HTTPException, Path
+from typing import Dict, Any, Optional, List
+import httpx
+import re
+import json
+import uuid
+import time
+from datetime import datetime, timedelta
+
+# Simple imports without try/except
+from pydantic import BaseModel
+from datetime import datetime
+
+# Fallback classes
+class ConversationStore:
+    def __init__(self):
+        self.conversations = {}
+    
+    def get_health_status(self):
+        return {"status": "active", "conversations": len(self.conversations)}
+    
+    def save_message(self, conv_id, role, content, metadata=None):
+        if conv_id not in self.conversations:
+            self.conversations[conv_id] = []
+        self.conversations[conv_id].append({
+            "role": role,
+            "content": content,
+            "metadata": metadata or {},
+            "timestamp": datetime.now().isoformat()
+        })
+        # Keep only last 50 messages per conversation
+        if len(self.conversations[conv_id]) > 50:
+            self.conversations[conv_id] = self.conversations[conv_id][-50:]
+    
+    def load_conversation(self, conv_id):
+        return self.conversations.get(conv_id, [])
+    
+    def list_conversations(self, limit=50):
+        return list(self.conversations.keys())[:limit]
+    
+    def get_conversation_summary(self, conv_id):
+        messages = self.conversations.get(conv_id, [])
+        return {
+            "message_count": len(messages),
+            "last_activity": messages[-1]["timestamp"] if messages else None
+        }
+    
+    def delete_conversation(self, conv_id):
+        if conv_id in self.conversations:
+            del self.conversations[conv_id]
+            return True
+        return False
+
+class OllamaContextManager:
+    def get_cache_stats(self):
+        return {}
+    
+    async def call_ollama_with_context(self, prompt, history, system_prompt=None):
+        # Enhanced Indonesian language support
+        if not system_prompt:
+            system_prompt = "Anda adalah asisten analisis telekomunikasi yang ahli. Selalu jawab dalam bahasa Indonesia yang natural dan mudah dipahami."
+        
+        # Enhanced prompt dengan Indonesian instruction
+        enhanced_prompt = f"""[SYSTEM INSTRUCTION: Jawab selalu dalam bahasa Indonesia yang natural dan profesional.]
+
+{system_prompt}
+
+{prompt}
+
+[REMINDER: Berikan jawaban dalam bahasa Indonesia yang mudah dipahami.]"""
+        
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "http://host.docker.internal:11434/api/generate",
+                    json={
+                        "model": "llama3:latest", 
+                        "prompt": enhanced_prompt,
+                        "stream": False
+                    }
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    return result["response"].strip()
+                else:
+                    return "Error: Ollama service unavailable"
+        except:
+            return "Error: Cannot connect to Ollama"
+
+class ConversationAnalyzer:
+    @staticmethod
+    def get_conversation_context(history):
+        return {"active_topics": [], "message_count": len(history)}
+    
+    @staticmethod
+    def extract_entities(conversation_history):
+        entities = {"msisdns": [], "devices": [], "parameters": []}
+        
+        # Extract parameter names from conversation
+        for msg in conversation_history:
+            content = msg.get("content", "").lower()
+            # Look for 4G parameter patterns
+            import re
+            param_matches = re.findall(r'\b[A-Z][a-zA-Z0-9]*(?:Rsrp|Rsrq|A4|B1|Ho|Quan|Sw)\b', msg.get("content", ""))
+            entities["parameters"].extend(param_matches)
+        
+        return entities
+
+class ChatRequest(BaseModel):
+    query: str
+
+class ChatResponse(BaseModel):
+    success: bool
+    response: str
+    query: str
+    conversation_id: str
+    timestamp: datetime
+    tools_used: list = []
+
+class OpenAIChatRequest(BaseModel):
+    model: str
+    messages: List[dict]
+    temperature: Optional[float] = 0.7
+
+# Try import shared modules, fallback if not available
+try:
+    from shared.utils.logger import log
+except ImportError:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    log = logging.getLogger(__name__)
+
+app = FastAPI(title="MCP Orchestrator - Conversation Mode")
+
+# Initialize conversation components
+conversation_store = ConversationStore()
+context_manager = OllamaContextManager()
+
+# MCP Server endpoints
+MCP_SERVERS = {
+    "telco": "http://telecom-mcp-ecosystem-telco-mcp-1:8001",
+    "vector_db": "http://telecom-mcp-ecosystem-vector-mcp-1:8002", 
+    "mbb": "http://telecom-mcp-ecosystem-mbb-mcp-1:8003"
+}
+
+# Query Analysis Functions
+async def parse_user_query(query: str, conversation_history: List[Dict]) -> Dict[str, Any]:
+    """Parse user query using conversation context"""
+    parsed = {
+        "msisdn": None,
+        "intent": "general",
+        "keywords": [],
+        "needs_history": False,
+        "entities": {}
+    }
+    
+    # Extract MSISDN from current query
+    msisdn_patterns = [
+        r'\b(08\d{8,11})\b',     # Indonesian format
+        r'\b(82\d{9,12})\b',     # Demo format  
+        r'\b(81\d{8,11})\b',     # Your format
+        r'\b(\d{10,13})\b'       # General mobile format
+    ]
+    
+    for pattern in msisdn_patterns:
+        match = re.search(pattern, query)
+        if match:
+            parsed["msisdn"] = match.group(1)
+            break
+    
+    # If no MSISDN in query, check conversation context
+    if not parsed["msisdn"] and conversation_history:
+        context = ConversationAnalyzer.get_conversation_context(conversation_history)
+        parsed["msisdn"] = context.get("last_msisdn")
+        if parsed["msisdn"]:
+            log.info(f"Using MSISDN from conversation context: {parsed['msisdn']}")
+    
+    # Check if historical analysis needed
+    historical_keywords = [
+        'history', 'historical', 'trend', 'compare', 'comparison', 'minggu', 'week', 
+        'hari ini vs', 'bandingkan', '7 hari', 'seminggu', 'kemarin vs', 'summary'
+    ]
+    parsed["needs_history"] = any(keyword in query.lower() for keyword in historical_keywords)
+    
+    # Use Ollama for intent detection with conversation context
+    intent_prompt = f"""
+Analisis query pengguna dan tentukan intent berdasarkan konteks percakapan:
+
+Query sekarang: "{query}"
+
+Konteks percakapan: {len(conversation_history)} pesan sebelumnya
+
+Tentukan intent dari pilihan:
+- "analysis": Untuk analisis data, cek traffic, monitoring  
+- "troubleshoot": Untuk masalah jaringan, error, lambat
+- "comparison": Untuk membandingkan data, trend
+- "parameter": Untuk pertanyaan parameter 4G/LTE
+- "general": Untuk pertanyaan umum, sapaan
+
+Jawab hanya dengan satu kata intent:"""
+    
+    try:
+        intent_result = await context_manager.call_ollama_with_context(
+            intent_prompt, 
+            conversation_history
+        )
+        detected_intent = intent_result.strip().lower()
+        
+        if detected_intent in ["analysis", "troubleshoot", "comparison", "parameter"]:
+            parsed["intent"] = detected_intent
+        else:
+            parsed["intent"] = "general"
+            
+    except Exception as e:
+        log.error(f"Intent detection failed: {e}")
+        parsed["intent"] = "general"
+    
+    # Extract entities from full conversation context
+    if conversation_history:
+        parsed["entities"] = ConversationAnalyzer.extract_entities(conversation_history + [{"content": query}])
+    
+    return parsed
+
+def should_use_mbb_knowledge(query: str, conversation_context: Dict = None) -> bool:
+    mbb_keywords = ['4g', 'lte', 'parameter', 'optimize', 'b1', 'accessibility', 'mobility', 'anchoring', 'rsrp', 'rsrq', 'sinr']
+    
+    # Check current query
+    if any(keyword in query.lower() for keyword in mbb_keywords):
+        return True
+    
+    # NEW: Check if conversation has parameter entities
+    if conversation_context:
+        entities = conversation_context.get("entities", {})
+        if entities.get("parameters"):
+            return True
+    
+    return False
+
+# Tool Execution Functions
+async def execute_telco_tool(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute telco MCP tool"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{MCP_SERVERS['telco']}/call",
+                json={"tool": tool_name, "params": params},
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        log.error(f"Telco tool call failed: {e}")
+        return {"success": False, "error": str(e)}
+
+async def execute_mbb_tool(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute MBB MCP tool"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{MCP_SERVERS['mbb']}/call",
+                json={"tool": tool_name, "params": params},
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        log.error(f"MBB tool call failed: {e}")
+        return {"success": False, "error": str(e)}
+
+def detect_date_from_query(query: str) -> datetime:
+    """Smart date detection from query"""
+    import re
+    from datetime import datetime, timedelta
+    
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+    
+    # Month mapping for Indonesian
+    month_map = {
+        'jan': 1, 'januari': 1, 'feb': 2, 'februari': 2, 'mar': 3, 'maret': 3,
+        'apr': 4, 'april': 4, 'mei': 5, 'may': 5, 'jun': 6, 'juni': 6,
+        'jul': 7, 'juli': 7, 'aug': 8, 'agustus': 8, 'sep': 9, 'september': 9,
+        'oct': 10, 'oktober': 10, 'nov': 11, 'november': 11, 'dec': 12, 'desember': 12
+    }
+    
+    # Relative dates
+    today_keywords = ['hari ini', 'today', 'sekarang', 'saat ini']
+    yesterday_keywords = ['kemarin', 'yesterday']
+    
+    if any(keyword in query.lower() for keyword in today_keywords):
+        return datetime.now()
+    elif any(keyword in query.lower() for keyword in yesterday_keywords):
+        return datetime.now() - timedelta(days=1)
+    else:
+        return datetime.now() - timedelta(days=1)  # Default to yesterday
+
+# Main Chat Endpoint - Claude Style
+@app.post("/chat/{conversation_id}")
+async def chat_endpoint(
+    conversation_id: str = Path(..., description="Unique conversation identifier"),
+    request: ChatRequest = None
+):
+    """Claude-style conversation endpoint with full context awareness"""
+    
+    start_time = time.time()
+    
+    # Load full conversation history
+    conversation_history = conversation_store.load_conversation(conversation_id)
+    
+    # Get conversation context for analysis
+    conversation_context = ConversationAnalyzer.get_conversation_context(conversation_history)
+    
+    # Parse user query with full context
+    parsed_query = await parse_user_query(request.query, conversation_history)
+    conversation_context["entities"] = parsed_query.get("entities", {})
+    msisdn = parsed_query.get("msisdn")
+    intent = parsed_query.get("intent")
+    needs_history = parsed_query.get("needs_history", False)
+    
+    tools_used = []
+    raw_data = None
+    
+    # Route query based on intent and context
+    try:
+        if should_use_mbb_knowledge(request.query, conversation_context):
+            # MBB Knowledge Base Route
+            log.info("Routing to MBB knowledge base")
+            
+            # Extract parameter name if mentioned
+            param_match = re.search(r'\b[A-Z][a-zA-Z0-9]+(?:Rsrp|Rsrq|Sinr|Thld|B1|B2)\b', request.query)
+            if param_match:
+                tool_result = await execute_mbb_tool("search_4g_parameters", {
+                    "parameter_name": param_match.group()
+                })
+                tools_used.append("search_4g_parameters")
+            else:
+                tool_result = await execute_mbb_tool("search_mbb_knowledge", {
+                    "query": request.query,
+                    "max_results": 2  # Reduce from 5 to 2
+                })
+                tools_used.append("search_mbb_knowledge")
+            
+
+            if tool_result.get("success"):
+                # Extract actual parameter data from results
+                results = tool_result.get("result", {}).get("results", [])
+                
+                if results:
+                    # Use the actual knowledge base data
+                    param_data = results[0]  # Take first/best result
+                    
+                    mbb_prompt = f"""
+            Berdasarkan knowledge base berikut, jawab query "{request.query}" dalam bahasa Indonesia:
+
+            Parameter: {param_data.get('metadata', {}).get('parameter_name', 'Unknown')}
+            Deskripsi: {param_data.get('metadata', {}).get('parameter_description', '')}
+            Default Value: {param_data.get('metadata', {}).get('default_value', '')}
+            Recommended Value: {param_data.get('metadata', {}).get('recommended_value', '')}
+            Range: {param_data.get('metadata', {}).get('range_value', '')}
+
+            Berikan penjelasan spesifik dan akurat dalam bahasa Indonesia.
+            """
+                else:
+                    mbb_prompt = f"Query: {request.query}\nTidak ditemukan data spesifik. Berikan penjelasan umum."
+                
+
+
+                
+                response_text = await context_manager.call_ollama_with_context(
+                    mbb_prompt,
+                    conversation_history,
+                    "Anda adalah expert parameter 4G/LTE yang menjelaskan dalam bahasa Indonesia yang mudah dipahami."
+                )
+                raw_data = tool_result
+            else:
+                response_text = f"Maaf, terjadi kesalahan saat mengakses knowledge base: {tool_result.get('error')}"
+        
+        elif msisdn:
+            # Telco API Analysis Route
+            target_date = detect_date_from_query(request.query)
+            params = {
+                "msisdn": msisdn,
+                "start_time": target_date.strftime("%Y-%m-%d 00:00"),
+                "end_time": target_date.strftime("%Y-%m-%d 23:55")
+            }
+            
+            # Select tool based on intent
+            if intent == "troubleshoot":
+                tool_name = "analyze_network_issues"
+            elif needs_history:
+                tool_name = "get_comprehensive_analysis"  # For historical data
+            else:
+                tool_name = "get_comprehensive_analysis"
+            
+            tools_used.append(tool_name)
+            
+            log.info(f"Executing {tool_name} for MSISDN: {msisdn} on {target_date.strftime('%Y-%m-%d')}")
+            tool_result = await execute_telco_tool(tool_name, params)
+            
+            if tool_result.get("success"):
+                # Enhanced telco analysis prompt in Indonesian
+                telco_prompt = f"""
+Berdasarkan hasil analisis data telco berikut, berikan analisis dalam bahasa Indonesia yang mudah dipahami:
+
+Data analisis:
+{json.dumps(tool_result, indent=2)}
+
+Detail:
+- Pertanyaan: "{request.query}"
+- MSISDN: {msisdn}
+- Tanggal analisis: {target_date.strftime('%Y-%m-%d')}
+
+Instruksi:
+- Analisis dalam bahasa Indonesia yang natural dan profesional
+- Berikan insight yang berguna dan actionable
+- Jelaskan kondisi jaringan dengan jelas
+- Sertakan rekomendasi jika diperlukan
+- Gunakan format yang mudah dibaca
+
+Analisis:"""
+                
+                response_text = await context_manager.call_ollama_with_context(
+                    telco_prompt,
+                    conversation_history,
+                    "Anda adalah analis telekomunikasi yang menjelaskan data jaringan dalam bahasa Indonesia."
+                )
+                raw_data = tool_result
+            else:
+                response_text = f"Gagal menganalisis data untuk {msisdn}: {tool_result.get('error', 'Unknown error')}"
+        
+        else:
+            # Enhanced general query in Indonesian
+            log.info("Processing general query with conversation context")
+            
+            general_prompt = f"""
+Pertanyaan pengguna: "{request.query}"
+
+Konteks: Anda adalah asisten analisis telekomunikasi NSQM yang membantu dengan:
+- Analisis data jaringan dan traffic
+- Parameter optimasi 4G/LTE 
+- Troubleshooting masalah jaringan
+- Monitoring performa telco
+
+Instruksi:
+- Jawab dalam bahasa Indonesia yang profesional dan ramah
+- Jika pertanyaan di luar scope telco, jelaskan spesialisasi Anda dengan sopan
+- Jika butuh data spesifik, beri panduan cara menggunakan sistem
+- Berikan informasi yang helpful dan actionable
+
+Jawaban:"""
+            
+            response_text = await context_manager.call_ollama_with_context(
+                general_prompt,
+                conversation_history,
+                "Anda adalah asisten telekomunikasi NSQM yang ramah dan membantu dalam bahasa Indonesia."
+            )
+        
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        
+        # Save conversation exchange
+        conversation_store.save_message(conversation_id, "user", request.query, {
+            "intent": intent,
+            "entities": parsed_query.get("entities", {}),
+            "processing_time_ms": int(processing_time * 1000)
+        })
+        
+        conversation_store.save_message(conversation_id, "assistant", response_text, {
+            "tools_used": tools_used,
+            "processing_time_ms": int(processing_time * 1000),
+            "raw_data_available": raw_data is not None
+        })
+        
+        # Extract entities from response for context
+        updated_context = ConversationAnalyzer.get_conversation_context(
+            conversation_store.load_conversation(conversation_id)
+        )
+        
+        return ChatResponse(
+            success=True,
+            response=response_text,
+            query=request.query,
+            conversation_id=conversation_id,
+            timestamp=datetime.now(),
+            tools_used=tools_used,
+            raw_data=raw_data,
+            entities_extracted=parsed_query.get("entities"),
+            context_used=updated_context
+        )
+    
+    except Exception as e:
+        log.error(f"Chat processing error: {str(e)}")
+        error_response = f"Maaf, terjadi kesalahan saat memproses permintaan: {str(e)}"
+        
+        # Save error to conversation
+        conversation_store.save_message(conversation_id, "assistant", error_response, {
+            "error": True,
+            "error_message": str(e)
+        })
+        
+        return ChatResponse(
+            success=False,
+            response=error_response,
+            query=request.query,
+            conversation_id=conversation_id,
+            timestamp=datetime.now(),
+            tools_used=[]
+        )
+
+# OpenAI Compatible Endpoints
+@app.get("/v1/models")
+async def list_models():
+    """OpenAI compatible models endpoint"""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "nsqm-support-assistant",
+                "object": "model", 
+                "created": int(time.time()),
+                "owned_by": "nsqm",
+                "permission": [],
+                "root": "nsqm-support-assistant",
+                "parent": None,
+                "description": "NSQM Telco Network Analysis Assistant with Conversation Memory"
+            }
+        ]
+    }
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: OpenAIChatRequest):
+    """OpenAI compatible chat completions endpoint with conversation support"""
+    
+    # Extract user message
+    user_message = ""
+    for message in request.messages:
+        if message.role == "user":
+            user_message = message.content
+            break
+    
+    if not user_message:
+        user_message = "Hello"
+    
+    # Generate conversation ID for OpenAI compatible mode
+    conversation_id = f"openai_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    
+    try:
+        # Use main chat endpoint
+        chat_request = ChatRequest(query=user_message)
+        result = await chat_endpoint(conversation_id, chat_request)
+        
+        response_content = result.response if result.success else "Sorry, I couldn't process your request."
+        tools_used = result.tools_used if hasattr(result, 'tools_used') else []
+        
+        # Add context about tools used
+        if tools_used:
+            response_content += f"\n\n*Analysis performed using: {', '.join(tools_used)}*"
+        
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant", 
+                        "content": response_content
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(user_message.split()),
+                "completion_tokens": len(response_content.split()),
+                "total_tokens": len(user_message.split()) + len(response_content.split())
+            }
+        }
+        
+    except Exception as e:
+        log.error(f"OpenAI chat completion error: {str(e)}")
+        error_content = f"An error occurred: {str(e)}"
+        
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion", 
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": error_content
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(user_message.split()),
+                "completion_tokens": len(error_content.split()), 
+                "total_tokens": len(user_message.split()) + len(error_content.split())
+            }
+        }
+
+# Conversation Management Endpoints
+@app.get("/conversations")
+async def list_conversations(limit: int = 50):
+    """List recent conversations"""
+    conversations = conversation_store.list_conversations(limit)
+    return {
+        "conversations": conversations,
+        "total": len(conversations)
+    }
+
+@app.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get full conversation history"""
+    messages = conversation_store.load_conversation(conversation_id)
+    summary = conversation_store.get_conversation_summary(conversation_id)
+    
+    return {
+        "conversation_id": conversation_id,
+        "summary": summary,
+        "messages": messages,
+        "message_count": len(messages)
+    }
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete conversation thread"""
+    success = conversation_store.delete_conversation(conversation_id)
+    if success:
+        return {"message": f"Conversation {conversation_id} deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Conversation not found or deletion failed")
+
+@app.get("/conversations/{conversation_id}/summary")
+async def get_conversation_summary(conversation_id: str):
+    """Get conversation summary and analytics"""
+    summary = conversation_store.get_conversation_summary(conversation_id)
+    messages = conversation_store.load_conversation(conversation_id)
+    
+    if messages:
+        context = ConversationAnalyzer.get_conversation_context(messages)
+        summary.update(context)
+    
+    return summary
+
+# Health and Status Endpoints
+@app.get("/health")
+async def health_check():
+    """Comprehensive health check"""
+    health_status = {
+        "orchestrator": "healthy",
+        "conversation_mode": True,
+        "timestamp": datetime.now().isoformat(),
+        "conversation_store": conversation_store.get_health_status(),
+        "context_manager": context_manager.get_cache_stats(),
+        "servers": {},
+        "active_conversations": len(conversation_store.list_conversations(1000))
+    }
+    
+    # Check Ollama connectivity
+    try:
+        test_response = await context_manager.call_ollama_with_context("Test", [])
+        health_status["ollama_service"] = len(test_response) > 0
+    except:
+        health_status["ollama_service"] = False
+    
+    # Check MCP servers
+    for server_name, server_url in MCP_SERVERS.items():
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{server_url}/health", timeout=5.0)
+                health_status["servers"][server_name] = "healthy" if response.status_code == 200 else "unhealthy"
+        except:
+            health_status["servers"][server_name] = "unreachable"
+    
+    return health_status
+
+@app.post("/conversations/{conversation_id}/analyze")
+async def analyze_conversation(conversation_id: str):
+    """Analyze conversation patterns and extract insights"""
+    messages = conversation_store.load_conversation(conversation_id)
+    
+    if not messages:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    analysis = ConversationAnalyzer.get_conversation_context(messages)
+    return {
+        "conversation_id": conversation_id,
+        "analysis": analysis,
+        "recommendations": await _get_conversation_recommendations(messages)
+    }
+
+async def _get_conversation_recommendations(messages: List[Dict]) -> List[str]:
+    """Generate recommendations based on conversation analysis"""
+    recommendations = []
+    
+    # Analyze conversation patterns
+    context = ConversationAnalyzer.get_conversation_context(messages)
+    
+    if "telco_analysis" in context.get("active_topics", []):
+        recommendations.append("Consider setting up automated monitoring for the analyzed MSISDN")
+    
+    if "4g_optimization" in context.get("active_topics", []):
+        recommendations.append("Review parameter optimization impact after implementation")
+    
+    if context.get("message_count", 0) > 20:
+        recommendations.append("Long conversation detected - consider summarizing key findings")
+    
+    return recommendations
+
+@app.get("/")
+async def root():
+    return {
+        "message": "MCP Orchestrator - Conversation Mode",
+        "version": "2.0.0",
+        "features": ["claude_style_conversations", "full_context_awareness", "ollama_integration"],
+        "endpoints": {
+            "chat": "/chat/{conversation_id}",
+            "conversations": "/conversations",
+            "health": "/health",
+            "openai_compatible": "/v1/chat/completions"
+        }
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Starting MCP Orchestrator - Conversation Mode on port 8000...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

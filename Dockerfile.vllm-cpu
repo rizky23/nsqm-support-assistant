@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install vLLM for CPU
+RUN pip install vllm[cpu] transformers torch
+
+# Create startup script
+RUN echo '#!/bin/bash\n\
+python -m vllm.entrypoints.openai.api_server \
+    --model ${MODEL_NAME:-microsoft/Phi-3-mini-4k-instruct} \
+    --host ${HOST:-0.0.0.0} \
+    --port ${PORT:-8000} \
+    --max-model-len 4096 \
+    --cpu-offload-gb 8 \
+    --dtype float16' > /app/start_vllm.sh
+
+RUN chmod +x /app/start_vllm.sh
+
+EXPOSE 8000
+
+CMD ["/app/start_vllm.sh"]

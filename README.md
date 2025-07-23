@@ -1,0 +1,1 @@
+# nsqm-support-assistant

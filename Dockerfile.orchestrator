@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies with longer timeout and no version locks
+RUN pip install --no-cache-dir --timeout 300 \
+    redis \
+    fastapi \
+    uvicorn \
+    httpx \
+    pydantic \
+    pydantic-settings \
+    loguru \
+    python-multipart
+
+# Copy application code
+COPY . .
+
+EXPOSE 8000
+
+CMD ["python", "orchestrator/main.py"]

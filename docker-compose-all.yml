@@ -1,0 +1,205 @@
+version: '3.8'
+
+services:
+  # Vector Database
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8003:8000"  # Changed port to avoid conflict
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_PORT=8000
+    networks:
+      - mcp_network
+
+  # Redis for caching
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mcp_network
+
+  # vLLM Service
+  vllm:
+    image: vllm/vllm-openai:latest
+    ports:
+      - "8080:8000"
+    environment:
+      - MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 4096
+      --gpu-memory-utilization 0.8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - mcp_network
+
+  # Telco MCP Server
+  telco-mcp:
+    build: .
+    command: python -m mcp_servers.telco_api.main
+    ports:
+      - "8001:8001"
+    environment:
+      - TELCO_BASE_URL=https://10.77.128.112:28701
+      - TOKEN_URL=https://10.77.128.111:38443/apigovernance/tokens/aksk
+      - APP_KEY=${APP_KEY}
+      - APP_SECRET=${APP_SECRET}
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - mcp_network
+
+  # Vector DB MCP Server
+  vector-mcp:
+    build: .
+    command: python -m mcp_servers.vector_db.main
+    ports:
+      - "8002:8002"
+    environment:
+      - VECTOR_DB_PROVIDER=chromadb
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - chroma
+    volumes:
+      - ./logs:/app/logs
+      - chroma_data:/app/chroma_db
+    networks:
+      - mcp_network
+
+  # Main Orchestrator with Chat Interface
+  orchestrator:
+    build: .
+    command: python orchestrator/main.py
+    ports:
+      - "8000:8000"
+    environment:
+      - VLLM_BASE_URL=http://vllm:8000
+      - VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+      - MAX_CHAT_SESSIONS=${MAX_CHAT_SESSIONS:-100}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - telco-mcp
+      - vector-mcp
+      - vllm
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - mcp_network
+
+volumes:
+  chroma_data:
+  redis_data:
+
+networks:
+  mcp_network:
+    driver: bridge
+
+# Alternative compose file for CPU-only deployment (without GPU)
+---
+# docker-compose.cpu.yml
+version: '3.8'
+
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8003:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_PORT=8000
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # CPU-only vLLM (smaller model)
+  vllm-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm-cpu
+    ports:
+      - "8080:8000"
+    environment:
+      - MODEL_NAME=microsoft/Phi-3-mini-4k-instruct
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+
+  telco-mcp:
+    build: .
+    command: python -m mcp_servers.telco_api.main
+    ports:
+      - "8001:8001"
+    environment:
+      - TELCO_BASE_URL=https://10.77.128.112:28701
+      - TOKEN_URL=https://10.77.128.111:38443/apigovernance/tokens/aksk
+      - APP_KEY=${APP_KEY}
+      - APP_SECRET=${APP_SECRET}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+
+  vector-mcp:
+    build: .
+    command: python -m mcp_servers.vector_db.main
+    ports:
+      - "8002:8002"
+    environment:
+      - VECTOR_DB_PROVIDER=chromadb
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      - chroma
+    volumes:
+      - ./logs:/app/logs
+
+  orchestrator:
+    build: .
+    command: python orchestrator/main.py
+    ports:
+      - "8000:8000"
+    environment:
+      - VLLM_BASE_URL=http://vllm-cpu:8000
+      - VLLM_MODEL=microsoft/Phi-3-mini-4k-instruct
+    depends_on:
+      - telco-mcp
+      - vector-mcp
+      - vllm-cpu
+    volumes:
+      - ./logs:/app/logs
+
+volumes:
+  chroma_data:
+  redis_data:
